@@ -1,0 +1,4 @@
+/vendor/
+observer_a_log.log
+data_store_file.data
+.phpunit.result.cache
