@@ -1,22 +1,25 @@
 <?php
 
-use Agrism\Intecsys\Entity;
-use Agrism\Intecsys\EntityManager;
-use Agrism\Intecsys\InventoryItem;
-use Agrism\Intecsys\Observers\EntityUpdateObserver;
-use Agrism\Intecsys\Observers\LowQuantityOnHandObserver;
+use Agrism\Intexsys\Entity;
+use Agrism\Intexsys\EntityManager;
+use Agrism\Intexsys\InventoryItem;
+use Agrism\Intexsys\Observers\EntityUpdateObserver;
+use Agrism\Intexsys\Observers\LowQuantityOnHandObserver;
 
 //Helper function for printing out error information
-function getLastError()
+function getLastError(): string
 {
+    /** @var array<string,string> $errorInfo */
     $errorInfo = error_get_last();
-    $errorString = " Error type {$errorInfo['type']}, {$errorInfo['message']} on line {$errorInfo['line']} of " .
+    return " Error type {$errorInfo['type']}, {$errorInfo['message']} on line {$errorInfo['line']} of " .
         "{$errorInfo['file']}. ";
-    return $errorString;
 }
 
 
-function driver()
+/**
+ * @throws Exception
+ */
+function driver(): void
 {
     $dataStorePath = "data_store_file.data";
     $entityManager = new EntityManager($dataStorePath);
@@ -60,9 +63,21 @@ function driver()
     $entityManager->updateStore();
 }
 
-function dump($args): void
+/**
+ * @param mixed ...$args
+ * @return void
+ */
+function dump(...$args): void
 {
-    echo '<pre style="background-color: greenyellow">';
-    print_r($args);
-    echo '</pre>';
+    /** @var array<string|mixed> $info */
+    $info = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS)[0];
+    $file = $info['file'];
+    $line = $info['line'];
+
+    foreach ($args as $arg){
+        echo '<pre style="background-color: black;color: white; padding: 3px 3px;">';
+        echo '<div style="background-color: #464545;color: #989898;">' .$file.':'.$line.'</div>';
+        print_r($arg);
+        echo '</pre>';
+    }
 }

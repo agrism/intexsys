@@ -1,28 +1,42 @@
 <?php
 
-namespace Agrism\Intecsys;
+namespace Agrism\Intexsys;
 
 use SplSubject;
 use SplObserver;
+use Exception;
 
-//This class managed in-memory entities and commmunicates with the storage class (DataStore in our case).
+//This class managed in-memory entities and communicates with the storage class (DataStore in our case).
 class EntityManager implements SplSubject
 {
-    protected $_entities = [];
+    /**
+     * @var array<mixed|Entity>
+     */
+    protected array $_entities = [];
+    /**
+     * @var array<string|int,string|int>
+     */
+    protected array $_entityIdToPrimary = [];
+    /**
+     * @var array<string|int,int|string>
+     */
+    protected array $_entityPrimaryToId = [];
+    /**
+     * @var int[]
+     */
+    protected array $_entitySaveList = [];
 
-    protected $_entityIdToPrimary = [];
+    protected ?int $_nextId = null;
 
-    protected $_entityPrimaryToId = [];
+    protected ?DataStore $_dataStore = null;
 
-    protected $_entitySaveList = [];
+    public ?Entity $entityBeforeUpdate = null;
+    public ?Entity $entityAfterUpdate = null;
 
-    protected $_nextId = null;
-
-    protected $_dataStore = null;
-
-    public ?Entity $currentEntity = null;
-
-    public function __construct($storePath)
+    /**
+     * @throws Exception
+     */
+    public function __construct(string $storePath)
     {
         $this->_dataStore = new DataStore($storePath);
 
@@ -30,8 +44,7 @@ class EntityManager implements SplSubject
 
         $itemTypes = $this->_dataStore->getItemTypes();
 
-        foreach ($itemTypes as $itemType)
-        {
+        foreach ($itemTypes as $itemType) {
             $itemKeys = $this->_dataStore->getItemKeys($itemType);
             foreach ($itemKeys as $itemKey) {
                 $this->_entities[] = $this->create($itemType, $this->_dataStore->get($itemType, $itemKey), true);
@@ -42,28 +55,33 @@ class EntityManager implements SplSubject
     /**
      * @var SplObserver[]
      */
-    private array $obesrvers = [];
+    private array $observers = [];
+
     public function attach(SplObserver $observer): void
     {
-        $this->obesrvers[serialize($observer)] = $observer;
+        $this->observers[sha1(serialize($observer))] = $observer;
     }
 
     public function detach(SplObserver $observer): void
     {
-        unset($this->obesrvers[serialize($observer)]);
+        unset($this->observers[sha1(serialize($observer))]);
     }
 
     public function notify(): void
     {
-        foreach ($this->obesrvers as $obesrver){
-            /** @var SplObserver $obesrver */
+        foreach ($this->observers as $obesrver) {
             $obesrver->update($this);
         }
     }
 
     //create an entity
-    public function create(string $entityName,array $data, bool $fromStore = false)
+
+    /**
+     * @param array<string|mixed> $data
+     */
+    public function create(string $entityName, array $data, bool $fromStore = false): Entity
     {
+        /** @var Entity $entity */
         $entity = new $entityName;
         $entity->_data = $data;
         $entity->_em = Entity::getDefaultEntityManager();
@@ -79,10 +97,12 @@ class EntityManager implements SplSubject
         return $entity;
     }
 
-    //update
-    public function update(Entity $entity, array $newData)
+    /**
+     * @param array<string|mixed> $newData
+     */
+    public function update(Entity $entity, array $newData): Entity
     {
-        if ($newData === $entity->_data) {
+        if ($newData === $entity->read()) {
             //Nothing to do
             return $entity;
         }
@@ -90,21 +110,22 @@ class EntityManager implements SplSubject
         $this->_entitySaveList[] = $entity->_id;
         $oldPrimary = $entity->{$entity->getPrimary()};
         $newPrimary = $newData[$entity->getPrimary()];
-        if ($oldPrimary != $newPrimary)
-        {
-            $this->_dataStore->delete(get_class($entity),$oldPrimary);
+        if ($oldPrimary != $newPrimary) {
+            $this->_dataStore->delete(get_class($entity), $oldPrimary);
             unset($this->_entityPrimaryToId[$oldPrimary]);
-            $this->_entityIdToPrimary[$entity->$id] = $newPrimary;
-            $this->_entityPrimaryToId[$newPrimary] = $entity->$id;
+            $this->_entityIdToPrimary[$entity->getId()] = $newPrimary;
+            $this->_entityPrimaryToId[$newPrimary] = $entity->getId();
         }
+
+        $entityBeforeUpdate = clone $entity;
         $entity->_data = $newData;
-        $this->setCurrentEntity($entity)->notify();
-        $this->clearCurrentEntitry();
+        $this->setEntityBeforeUpdate($entityBeforeUpdate)->setEntityAfterUpdate($entity)->notify();
+        $this->clearEntity();
         return $entity;
     }
 
     //Delete
-    public function delete(Entity $entity)
+    public function delete(Entity $entity): void
     {
         $id = $entity->_id;
         $entity->_id = null;
@@ -112,13 +133,12 @@ class EntityManager implements SplSubject
         $entity->_em = null;
         $this->_entities[$id] = null;
         $primary = $entity->{$entity->getPrimary()};
-        $this->_dataStore->delete(get_class($entity),$primary);
+        $this->_dataStore->delete(get_class($entity), $primary);
         unset($this->_entityIdToPrimary[$id]);
         unset($this->_entityPrimaryToId[$primary]);
-        return null;
     }
 
-    public function findByPrimary(Entity $entity, $primary)
+    public function findByPrimary(Entity $entity, string $primary): ?Entity
     {
         if (isset($this->_entityPrimaryToId[$primary])) {
             $id = $this->_entityPrimaryToId[$primary];
@@ -129,22 +149,35 @@ class EntityManager implements SplSubject
     }
 
     //Update the datastore to update itself and save.
-    public function updateStore() {
-        foreach($this->_entitySaveList as $id) {
+
+    /**
+     * @throws Exception
+     */
+    public function updateStore(): void
+    {
+        foreach ($this->_entitySaveList as $id) {
+            /** @var Entity $entity */
             $entity = $this->_entities[$id];
-            $this->_dataStore->set(get_class($entity),$entity->{$entity->getPrimary()},$entity->_data);
+            $this->_dataStore->set(get_class($entity), $entity->{$entity->getPrimary()}, $entity->_data);
         }
         $this->_dataStore->save();
     }
 
-    private function setCurrentEntity(Entity $entity): self
+    private function setEntityBeforeUpdate(Entity $entity): self
     {
-        $this->currentEntity = $entity;
+        $this->entityBeforeUpdate = $entity;
         return $this;
     }
 
-    private function clearCurrentEntitry(): void
+    private function setEntityAfterUpdate(Entity $entity): self
     {
-        $this->currentEntity = null;
+        $this->entityAfterUpdate = $entity;
+        return $this;
+    }
+
+    private function clearEntity(): void
+    {
+        $this->entityBeforeUpdate = null;
+        $this->entityAfterUpdate = null;
     }
 }
